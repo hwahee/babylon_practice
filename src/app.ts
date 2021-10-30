@@ -2,7 +2,9 @@ import "@babylonjs/core/Debug/debugLayer";
 import "@babylonjs/inspector";
 import "@babylonjs/loaders/glTF";
 import { AdvancedDynamicTexture, Button, Control } from "@babylonjs/gui"
-import { ArcRotateCamera, Camera, Color4, Engine, FreeCamera, HemisphericLight, Light, Mesh, MeshBuilder, Scene, Vector3 } from "@babylonjs/core";
+import { ArcRotateCamera, Camera, Color3, Color4, Engine, FreeCamera, HemisphericLight, Light, Matrix, Mesh, MeshBuilder, PointLight, Quaternion, Scene, ShadowGenerator, StandardMaterial, Vector3 } from "@babylonjs/core";
+import { Environment } from "./objects/Environment";
+import { Player } from "./system/CharacterController";
 
 enum State { START, GAME, LOSE, CUTSCENE }
 
@@ -27,6 +29,10 @@ class App {
 	private _state: number = State.START
 	private _gameScene: Scene | undefined
 	private _cutScene: Scene | undefined
+
+	private _environment: Environment | undefined
+	public assets: any
+	private _player: Player | undefined
 
 	constructor() {
 		// create the canvas html element and attach it to the webpage
@@ -57,12 +63,66 @@ class App {
 					this._scene.debugLayer.show()
 				}
 			}
-		});
+		})
 
 		this._main()
 	}
 
-	private middle_setUpScene(): [Scene, Camera] {
+	private _loadCharacterAssets(scene: Scene) {
+		async function loadCharacter() {
+			const outer = MeshBuilder.CreateBox("outer", { width: 2, depth: 1, height: 3 }, scene)
+			outer.isVisible = false
+			outer.isPickable = false
+			outer.checkCollisions = true
+
+			outer.bakeTransformIntoVertices(Matrix.Translation(0, 1.5, 0))
+
+			outer.ellipsoid = new Vector3(1, 1.5, 1)
+			outer.ellipsoidOffset = new Vector3(0, 1.5, 0)
+
+			outer.rotationQuaternion = new Quaternion(0, 1, 0, 0)		//TPS처럼 플레이어의 등을 보기 위해
+
+			const box = MeshBuilder.CreateBox("Small1", {
+				width: 0.5, depth: 0.5, height: 0.25, faceColors: [
+					new Color4(0, 0, 0, 1), new Color4(0, 0, 0, 1), new Color4(0, 0, 0, 1), new Color4(0, 0, 0, 1), new Color4(0, 0, 0, 1), new Color4(0, 0, 0, 1),
+				]
+			}, scene)
+			box.position.y = 1.5
+			box.position.z = 1
+
+			const body = MeshBuilder.CreateCylinder("body", { height: 3, diameterTop: 2, diameterBottom: 2, tessellation: 0, subdivisions: 0 }, scene)
+			const bodymt1 = new StandardMaterial("red", scene)
+			bodymt1.diffuseColor = new Color3(0.8, 0.5, 0.5)
+			body.material = bodymt1
+			body.isPickable = false
+			body.bakeTransformIntoVertices(Matrix.Translation(0, 1.5, 0))
+
+			box.parent = body
+			body.parent = outer
+
+			return {
+				mesh: outer as Mesh
+			}
+		}
+		return loadCharacter().then((assets) => {
+			this.assets = assets
+		})
+	}
+	private async _initializeGameAsync(scene: Scene): Promise<void> {
+		let light0 = new HemisphericLight("HemiLight", new Vector3(0, 1, 0), scene)
+		const light = new PointLight("sparklight", new Vector3(0, 0, 0), scene)
+		light.diffuse = new Color3(0.08, 0.1, 0.15)
+		light.intensity = 35
+		light.radius = 1
+
+		const shadowGenerator = new ShadowGenerator(1024, light)
+		shadowGenerator.darkness = 0.4
+
+		//create player
+		this._player = new Player(this.assets, scene, shadowGenerator)
+	}
+
+	private _middle_setUpScene(): [Scene, Camera] {
 		this._scene.detachControl()
 		let tempScene = new Scene(this._engine)
 		tempScene.clearColor = new Color4(0, 0, 0, 1)
@@ -71,12 +131,11 @@ class App {
 
 		return [tempScene, tempCamera]
 	}
-
 	private async _gotoStart() {
 		this._engine.displayLoadingUI()
 
 		//Scene setup
-		let [tempScene, tempCamera] = this.middle_setUpScene()
+		let [tempScene, tempCamera] = this._middle_setUpScene()
 
 		//create a fullscreen ui for all of our GUI elements
 		const guiMenu = AdvancedDynamicTexture.CreateFullscreenUI("UI")
@@ -104,10 +163,10 @@ class App {
 
 		//Scene setup
 		this._scene.detachControl()
-		this._cutScene=new Scene(this._engine)
-		let tempCamera=new FreeCamera("camera1", new Vector3(0,0,0), this._cutScene)
+		this._cutScene = new Scene(this._engine)
+		let tempCamera = new FreeCamera("camera1", new Vector3(0, 0, 0), this._cutScene)
 		tempCamera.setTarget(Vector3.Zero())
-		this._cutScene.clearColor=new Color4(0,0,0,1)
+		this._cutScene.clearColor = new Color4(0, 0, 0, 1)
 
 		//create a fullscreen ui for all of our GUI elements
 		const cutScene = AdvancedDynamicTexture.CreateFullscreenUI("cutscene")
@@ -140,7 +199,7 @@ class App {
 		this._engine.displayLoadingUI()
 
 		//Scene setup
-		let [tempScene, tempCamera] = this.middle_setUpScene()
+		let [tempScene, tempCamera] = this._middle_setUpScene()
 
 		//create a fullscreen ui for all of our GUI elements
 		const guiMenu = AdvancedDynamicTexture.CreateFullscreenUI("UI")
@@ -162,15 +221,22 @@ class App {
 		this._state = State.LOSE
 	}
 	private async _setUpGame() {
+		//create scene
 		let tempScene = new Scene(this._engine)
 		this._gameScene = tempScene
+
+		//create environment
+		const environment: Environment = new Environment(tempScene)
+		this._environment = environment
+		await this._environment.load()
+
+		//create character
+		await this._loadCharacterAssets(tempScene)
 	}
 	private async _gotoGame() {
 		this._scene.detachControl()
 		let tempScene = this._gameScene
 		tempScene!.clearColor = new Color4(0.01, 0.01, 0.20)
-		let tempCamera: ArcRotateCamera = new ArcRotateCamera("Camera", Math.PI / 2, Math.PI / 2, 2, Vector3.Zero(), tempScene!)
-		tempCamera.setTarget(Vector3.Zero())
 
 		//gui
 		const playerUI = AdvancedDynamicTexture.CreateFullscreenUI("UI")
@@ -186,8 +252,10 @@ class App {
 			tempScene?.detachControl()
 		})
 
-		const light1: HemisphericLight = new HemisphericLight("light1", new Vector3(1, 1, 0), tempScene!)
-		const sphere: Mesh = MeshBuilder.CreateSphere("sphere", { diameter: 1 }, tempScene)
+		await this._initializeGameAsync(tempScene!)
+
+		await tempScene!.whenReadyAsync()
+		tempScene!.getMeshByName("outer")!.position = new Vector3(0, 3, 0)
 
 		this._scene.dispose()
 		this._state - State.GAME
